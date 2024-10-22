@@ -1,41 +1,50 @@
-# Conserved-Blocks
-A machine learning pipline for unsupervised identification of shared segments (conserved regions) of DNA across a microbial population.
+# CLASH
+This repository contains the source code for the CLASH model, training scripts, and experiments submitted to RECOMB 2025.
 
-## Skewed Cross-Attention
-Our current implementation trains a novel Skewed Cross-Attention (SCA) model to identify pairs of sequences that share a conserved region. We then use this model to cluster a dataset via a SCRAPT-like iterative clustering algorithm (see next section).
+## Example usage
+We implement a data-independent hashing approach in `train-hash.py`, effectively creating a learned LSH function, and a data-dependent hashing approach in `train-hash-dependent.py`. Each can be used for all-vs-all and source-target search tasks. These examples use `db.fa` as the source dataset for both tasks and `ref.fa` as the target dataset for source-target tasks.
 
-Our model architecture is depicted below and is defined in `tfv2transformer/skew_attn.py`. SCA is lightweight and can be used on sequences of length 4,096 with a batch size of 32 on a Nvidia RTX A5000, despite the $O(n^2)$ space complexity imposed by the computation of a scaled dot product attention matrix.
+### Data-independent
+```bash
+python train-hash.py -l 1000 -s 500 -d 256 -m /path/to/model.h5
+python hash.py -o src_index.pickle -l 1000 -d 256 -m /path/to/model.h5 -i db.fa
+python hash.py -o tgt_index.pickle -l 1000 -d 256 -m /path/to/model.h5 -i ref.fa # source-target only
+```
+### Data-independent
 
-Training is defined in `train-skew.py`. We only use synthetic data for this step, which we generate during training. The bounds for an accepted conserved region can be set at training time via command line arguments.
+#### All-vs-all
+```bash
+python train-hash-dependent.py -l 1000 -s 500 -d 128 -n 1 -m /path/to/model.h5 -t db.fa
+python hash.py -o src_index.pickle -l 1000 -d 128 -n 1 -m /path/to/model.h5 -i db.fa
+```
+#### Source-target
+```bash
+python train-hash-dependent.py -l 1000 -s 500 -d 128 -n 1 -m /path/to/model.h5 -t ref.fa
+python hash.py -o src_index.pickle -l 1000 -d 128 -n 1 -m /path/to/model.h5 -i db.fa
+python hash.py -o tgt_index.pickle -l 1000 -d 128 -n 1 -m /path/to/model.h5 -i ref.fa
+```
 
-![SCA architecture block diagram](./architecture.png)
-
-## Iterative Clustering
-Our clustering algorithm is adapted from [SCRAPT](https://academic.oup.com/nar/article/51/8/e46/7076468) and is intended to scale well to large datasets. On each iteration, we perform dense clustering on all $n \choose 2$ pairs in a mini-batch, select cluster representatives via multiplicity, then search the entire dataset for sequences that share a conserved region with each cluster representative. Each iteration has $O(b^2+nc)$ time complexity, where $b$ is the mini-batch size, $n$ is the number of sequences in the dataset, and $c$ is the number of new clusters we have identified this interation.
-
-This algorithm is defined in `cluster-binary.py`. 
+## Implementation
+Our model architecture is is defined in `model/chunk_hash.py`. In total, our encoder uses a plain `Conv1D` layer, then 3 `InceptionLayer`s, and finally a single `ResBlock`, with `MaxPool1D(2)` between each layer. Filters are then `Flatten`ed and fed to a `Dense` hash layer with a `tanh` activation function. The objective function and custom hash metrics are implemented in `model/hash_metrics.py`. Synthetic data generators are implemented in `model/gensynth.py`. 
 
 ## Evaluation
 
-### BLAST Support
-First, run `blastn -outfmt 0 -subject /path/to/data.fasta -query /path/to/data.fasta > blast-out.txt` for your dataset. This may not be feasible for very large datasets.
+### Ablation studies
+Our evolution parameter ablation study is defined in `genassemble`, with `genassemble/evosim.py` defining evolution simulation, `genassemble/run.sh` performing the experiment, and `genassemble/figures.py` generating the figures shown in the paper.
 
-Then run `utils/blast-reduce.py`, setting the `blastfile` variable to your BLAST output file's location.
+Our training ablation across shared region thresholds and length-to-threshold ratios is performed by `train-hash-ablation.sh`. Evaluation at fixed shared region sizes can be performed by both training scripts by setting the `--band_eval` flag. If the model has already been trained, both scripts will skip to evaluation if the `--eval_only` flag is set.
 
-Finally, run `eval-blast.py`. This will determine whether each pairwise alignment implied by your output clusters is present in the BLAST alignment and report the BLAST support for each cluster.
+Note that our scripts are designed for usage with SLURM on a specific HPC cluster and may require adaptation to function in other environments.
 
-### Self-Evaluation
-Run `eval-self.py`. This will use SCA to evaluate each pairwise alignment implied by your output clusters. This can be useful for dismbiguating clusters in cases where a cluster representative contains multiple conserved regions.
+### BLAST validation
+First, run BLAST on the source and target dataset, which may not be feasible for very large datasets. For all-vs-all, simply use the same dataset as source and target. We currently use the human-readable format and reduce the output with a script, which makes `eval-blast.py` implementation more convenient. We will likely change this in the future.
+```bash
+blastn -outfmt 0 -subject /path/to/source.fasta -query /path/to/target.fasta > blast-out.txt
+utils/blast-reduce.py blast-out.txt > blast-reduced.txt
+```
 
-## Repositories Used
-
-### Transformer Implementations
-[Big Bird](https://github.com/google-research/bigbird) ([paper](https://proceedings.neurips.cc/paper/2020/hash/c8512d142a2d849725f31a9a7a361ab9-Abstract.html)) (currently unused)
-
-[Keras/TFv2 Transformer](https://github.com/lsdefine/attention-is-all-you-need-keras)
-
-### Pretrained Embedding Model
-[dna2vec](https://github.com/pnpnpn/dna2vec) ([paper](https://arxiv.org/abs/1701.06279))
-
-
-Currently only used for the list of all 4-mers stored in `utils/4mers.txt`.
+Finally, run `eval-blast.py`. This will determine whether each BLAST alignment has a matching hash collision, reporting the BLAST recall and search space remaining (SSR) used in the paper. We include all-vs-all and source-target examples below. The original model architecture and hashing approach are irrelevant beyond the chunk length `l` and the number of hash tables `n`.
+```bash
+python eval-blast.py --mode allvsall --srcindex src_index.pickle --blast blast-reduced.txt -n 8 -l 1000
+python eval-blast.py --mode srctgt --srcindex src_index.pickle --tgtindex tgt_index.pickle --blast blast-reduced.txt -n 1 -l 1000
+```
