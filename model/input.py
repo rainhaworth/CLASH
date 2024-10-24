@@ -202,7 +202,7 @@ class HashIndex:
                         mds.append(instr[1:])
                     continue
                 seq += instr
-        seqs = sorted(seqs, key=len)
+        #seqs = sorted(seqs, key=len)
         return seqs, mds
     
     def chunks_from_file(self, fileidx, chunksz, overlap=0.5, k=4, metadata=False):

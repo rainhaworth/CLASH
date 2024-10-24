@@ -21,6 +21,9 @@ parser.add_argument('-e', '--encoder', default='chunk', type=str, choices=['chun
 parser.add_argument('-i', '--interactive', action='store_true')
 parser.add_argument('--band_eval', action='store_true')
 parser.add_argument('--eval_only', action='store_true')
+parser.add_argument('-m', '--mfile', default='/fs/nexus-scratch/rhaworth/models/chunkhash.model.h5', type=str)
+parser.add_argument('--mult', default=2.0, type=float)
+parser.add_argument('--train_simple', action='store_true')
 args = parser.parse_args()
 
 chunksz = args.lenseq
@@ -33,11 +36,14 @@ n_hash = args.n_hash # for bucketing approach
 enc = args.encoder
 
 itokens, _ = dd.LoadKmerDict('./utils/' + str(k) + 'mers.txt', k=k)
-#gen = gs.gen_adversarial_block_data_binary(max_len=max_len, min_len=min_len, batch_size=batch_size, tokens=itokens, k=k)
-#gen = gs.gen_simple_block_data_binary(max_len=max_len, min_len=min_len, batch_size=batch_size, tokens=itokens, k=k)
-#gen_train = gs.gen_simple_block_data_binary(max_len=chunksz, min_len=chunksz, block_min=min_len, batch_size=batch_size, tokens=itokens, k=k)
-gen_train = gs.gen_adversarial_chunks_binary(chunk_size=chunksz, min_shared=min_len, batch_size=batch_size,
-                                             tokens=itokens, k=k, boundary_pad=20, min_pop=1.0)
+
+def make_gen(prob_sub=0.01, exp_indel_rate=0.005, exp_indel_size=10, min_len=min_len, fixed=None, simple=False):
+    return gs.gen_adversarial_chunks_binary(chunk_size=chunksz, min_shared=min_len, batch_size=batch_size,
+                                            prob_sub=prob_sub, exp_indel_rate=exp_indel_rate, exp_indel_size=exp_indel_size,
+                                            tokens=itokens, k=k, boundary_pad=20, min_pop=1.0,
+                                            fixed=fixed, mult=args.mult, simple=simple)
+
+gen_train = make_gen(simple=args.train_simple)
 
 print('kmer dict size:', itokens.num())
 
@@ -58,7 +64,7 @@ def lr_schedule(epoch, lr):
     else:
         return lr * np.exp(-0.5)
 
-mfile = '/fs/nexus-scratch/rhaworth/models/chunkhash.model.h5'
+mfile = args.mfile
 
 lr_scheduler = tf.keras.callbacks.LearningRateScheduler(lr_schedule, verbose=0)
 model_saver = tf.keras.callbacks.ModelCheckpoint(mfile, monitor='loss', save_best_only=True, save_weights_only=True)
@@ -81,24 +87,21 @@ if args.interactive:
 # train unless eval_only flag set
 if not args.eval_only:
     ssb.model.fit(gen_train, steps_per_epoch=200, epochs=15, verbose=verbose, \
-                #validation_data=([Xvalid, Yvalid], None), \
-                callbacks=[lr_scheduler,
-                            model_saver,
-                            #tensorboard_callback
-                            ])
+                  #validation_data=([Xvalid, Yvalid], None), \
+                  callbacks=[lr_scheduler,
+                             model_saver,
+                             #tensorboard_callback
+                             ])
     print('done training')
 
 # check accuracy near decision boundary
 print('hard gen eval')
-gen_hard = gs.gen_adversarial_chunks_binary(chunk_size=chunksz, min_shared=min_len, batch_size=batch_size,
-                                            tokens=itokens, k=k, boundary_pad=20, min_pop=1.0)
+gen_hard = make_gen()
 ssb.model.evaluate(gen_hard, steps=100, verbose=verbose)
 
 # check accuracy far from decision boundary
 print('simple gen eval')
-gen_simple = gs.gen_adversarial_chunks_binary(chunk_size=chunksz, min_shared=min_len, batch_size=batch_size,
-                                                prob_sub=0.0, exp_indel_rate=0.0, exp_indel_size=0,
-                                                tokens=itokens, k=k, boundary_pad=20, min_pop=1.0)
+gen_simple = make_gen(simple=True)
 ssb.model.evaluate(gen_simple, steps=100, verbose=verbose)
 
 # evaluate w/ fixed shared region sizes in steps of 100 if band_eval flag is set
@@ -114,15 +117,10 @@ if args.band_eval:
         label = int(shared_len >= min_len)
 
         print('hard gen eval')
-        gen_hard = gs.gen_adversarial_chunks_binary(chunk_size=chunksz, min_shared=shared_len, batch_size=batch_size,
-                                                    tokens=itokens, k=k, boundary_pad=20, min_pop=1.0,
-                                                    fixed=label)
+        gen_hard = make_gen(min_len=shared_len, fixed=label)
         ssb.model.evaluate(gen_hard, steps=100, verbose=verbose)
 
         # check accuracy far from decision boundary
         print('simple gen eval')
-        gen_simple = gs.gen_adversarial_chunks_binary(chunk_size=chunksz, min_shared=shared_len, batch_size=batch_size,
-                                                    prob_sub=0.0, exp_indel_rate=0.0, exp_indel_size=0,
-                                                    tokens=itokens, k=k, boundary_pad=20, min_pop=1.0,
-                                                    fixed=label)
+        gen_simple = make_gen(min_len=shared_len, fixed=label, simple=True)
         ssb.model.evaluate(gen_simple, steps=100, verbose=verbose)

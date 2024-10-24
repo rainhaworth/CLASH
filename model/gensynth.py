@@ -343,20 +343,23 @@ def enforce_length(seq, length, min_pop=1.0):
 # alt training regime: adversarial single chunks
 def gen_adversarial_chunks_binary(chunk_size=1024, min_pop=0.8, min_shared=512, boundary_pad=50,
                                   prob_sub=0.01, exp_indel_rate=0.005, exp_indel_size=10, 
-                                  batch_size=32, tokens=None, k=4, fixed=None):
+                                  batch_size=32, tokens=None, k=4, fixed=None,
+                                  mult=2.0, simple=False):
     # TODO: real docstring
     # fixed: set to 1 or 0 for each sample to have a given label
     seqs = [[],[]]
     labels = []
-
-    # leaving indels unimplemented for now to simplify
 
     while True:
         # pre-generate random number batches
         # if fixed, enforce shared region size; T and F are not real in this case, just makes implementation easier
         if fixed is None:
             shared_T = np.random.randint(min_shared, chunk_size-1, size=batch_size//2)
-            shared_F = np.random.randint(k, min_shared-boundary_pad, size=batch_size//2)
+            if simple:
+                shared_F = np.random.randint(k, min_shared-boundary_pad, size=batch_size//2)
+            # new approach: full spectrum of shared region lengths
+            else:
+                shared_F = np.random.randint(k, chunk_size-1, size=batch_size//2)
         else:
             shared_T = [min_shared] * (batch_size // 2)
             shared_F = [min_shared] * (batch_size // 2)
@@ -378,13 +381,24 @@ def gen_adversarial_chunks_binary(chunk_size=1024, min_pop=0.8, min_shared=512, 
                 shared_length = shared_F[idx // 2]
             shared = gen_seq(shared_length)
 
-            # sample indel RVs
-            exp_indel_count = exp_indel_rate * shared_length
-            indel_count = np.random.poisson(exp_indel_count)
-            ins_frac = np.random.uniform()
-            indel_sizes = np.random.poisson(exp_indel_size, size=indel_count)
+            # multiply negative sample evo rate by mult
+            if fixed:
+                label_mult = 1.0
+            else:
+                label_mult = float(mult + label - label*mult) # result = mult when label=0, 1 when label=1
 
-            ins_count = np.int32(np.round(indel_count * ins_frac))
+            # sample indel RVs
+            if simple:
+                indel_count = 0
+                ins_count = 0
+                indel_sizes = []
+            else:
+                exp_indel_count = exp_indel_rate * shared_length
+                indel_count = np.random.poisson(exp_indel_count)
+                ins_frac = np.random.uniform()
+                indel_sizes = np.random.poisson(exp_indel_size, size=indel_count)
+
+                ins_count = np.int32(np.round(indel_count * ins_frac))
 
             # generate sequences: perturb then insert into new sequence
             for seqnum in range(2):
@@ -411,7 +425,8 @@ def gen_adversarial_chunks_binary(chunk_size=1024, min_pop=0.8, min_shared=512, 
 def gen_adversarial_chunks_dependent(chunks,
                                      chunk_size=1024, min_pop=0.8, min_shared=512, boundary_pad=50,
                                      prob_sub=0.01, exp_indel_rate=0.005, exp_indel_size=10, 
-                                     batch_size=32, tokens=None, k=4, fixed=None):
+                                     batch_size=32, tokens=None, k=4, fixed=None,
+                                     mult=2.0, simple=False):
     # TODO: real docstring
     # fixed: set to 1 or 0 for each sample to have a given label
     seqs = [[],[]]
@@ -431,7 +446,6 @@ def gen_adversarial_chunks_dependent(chunks,
         batch_idxs = []
         to_sample = batch_size
         if len(chunk_idxs) < batch_size:
-            print('all chunks traversed')
             batch_idxs = chunk_idxs
             chunk_idxs = list(range(chunk_count))
             to_sample = batch_size - len(batch_idxs)
@@ -443,7 +457,11 @@ def gen_adversarial_chunks_dependent(chunks,
         # if fixed, enforce shared region size; T and F are not real in this case, just makes implementation easier
         if fixed is None:
             shared_T = np.random.randint(min_shared, chunk_size-1, size=batch_size//2)
-            shared_F = np.random.randint(k, min_shared-boundary_pad, size=batch_size//2)
+            if simple:
+                shared_F = np.random.randint(k, min_shared-boundary_pad, size=batch_size//2)
+            # new approach: full spectrum of shared region lengths
+            else:
+                shared_F = np.random.randint(k, chunk_size-1, size=batch_size//2)
         else:
             shared_T = [min_shared] * (batch_size // 2)
             shared_F = [min_shared] * (batch_size // 2)
@@ -472,16 +490,27 @@ def gen_adversarial_chunks_dependent(chunks,
             shared_start = np.random.randint(0, seqlen-shared_length)
             shared = chunk[shared_start : shared_start + shared_length]
 
-            # sample indel RVs
-            exp_indel_count = exp_indel_rate * shared_length
-            indel_count = np.random.poisson(exp_indel_count)
-            ins_frac = np.random.uniform()
-            indel_sizes = np.random.poisson(exp_indel_size, size=indel_count)
+            # multiply negative sample evo rate by mult
+            if fixed:
+                label_mult = 1.0
+            else:
+                label_mult = float(mult + label - label*mult) # result = mult when label=0, 1 when label=1
 
-            ins_count = np.int32(np.round(indel_count * ins_frac))
+            # sample indel RVs
+            if simple:
+                indel_count = 0
+                ins_count = 0
+                indel_sizes = []
+            else:
+                exp_indel_count = exp_indel_rate * shared_length
+                indel_count = np.random.poisson(exp_indel_count*label_mult)
+                ins_frac = np.random.uniform()
+                indel_sizes = np.random.poisson(exp_indel_size*label_mult, size=indel_count)
+
+                ins_count = np.int32(np.round(indel_count * ins_frac))
 
             # evolve shared region
-            shared = sim_evo(shared, prob_sub, indel_count, ins_count, indel_sizes)
+            shared = sim_evo(shared, prob_sub*label_mult, indel_count, ins_count, indel_sizes)
 
             # trim or pad to meet chunk_size; use c + k - 1 because we want c kmers, not c bp
             seq = enforce_length(shared, seqlen)

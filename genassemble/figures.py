@@ -2,9 +2,11 @@ import glob
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
+#import matplotlib.font_manager as fm
 from tqdm import tqdm
 
-plt.rcParams['font.family'] = 'sans'
+plt.rcParams['font.family'] = 'serif'
+plt.rcParams['font.serif'] = 'Nimbus Roman'
 
 mega_files = glob.glob('mega*.csv')
 nucm_files = glob.glob('nucm*.csv')
@@ -75,7 +77,7 @@ for tool in ['mega', 'nucm']:
         name = 'MUMmer'
 
     fig.suptitle(name + ' Score, Indel Rate vs. Size')
-    fig.supxlabel('Psub')
+    fig.supxlabel('P(sub)')
     fig.supylabel('Length')
     plt.tight_layout()
 
