@@ -315,6 +315,17 @@ def sim_evo(seq, prob_sub, indel_count, ins_count, indel_sizes):
     # convert back to string and return
     return ''.join(seq)
 
+# helper function: sample RVs for sim_evo indels
+def sample_indel_RVs(shared_length, exp_indel_rate, exp_indel_size):
+    exp_indel_count = exp_indel_rate * shared_length
+    indel_count = np.random.poisson(exp_indel_count)
+    ins_frac = np.random.uniform()
+    indel_sizes = np.random.poisson(exp_indel_size, size=indel_count)
+
+    ins_count = np.int32(np.round(indel_count * ins_frac))
+    
+    return indel_count, ins_count, indel_sizes
+
 # helper function: enforce len(seq) == length via trimming or padding with random DNA
 def enforce_length(seq, length, min_pop=1.0):
     if len(seq) > length:
@@ -393,12 +404,7 @@ def gen_adversarial_chunks_binary(chunk_size=1024, min_pop=0.8, min_shared=512, 
                 ins_count = 0
                 indel_sizes = []
             else:
-                exp_indel_count = exp_indel_rate * shared_length
-                indel_count = np.random.poisson(exp_indel_count)
-                ins_frac = np.random.uniform()
-                indel_sizes = np.random.poisson(exp_indel_size, size=indel_count)
-
-                ins_count = np.int32(np.round(indel_count * ins_frac))
+                indel_count, ins_count, indel_sizes = sample_indel_RVs(shared_length, exp_indel_rate, exp_indel_size)
 
             # generate sequences: perturb then insert into new sequence
             for seqnum in range(2):
@@ -502,12 +508,9 @@ def gen_adversarial_chunks_dependent(chunks,
                 ins_count = 0
                 indel_sizes = []
             else:
-                exp_indel_count = exp_indel_rate * shared_length
-                indel_count = np.random.poisson(exp_indel_count*label_mult)
-                ins_frac = np.random.uniform()
-                indel_sizes = np.random.poisson(exp_indel_size*label_mult, size=indel_count)
-
-                ins_count = np.int32(np.round(indel_count * ins_frac))
+                indel_count, ins_count, indel_sizes = sample_indel_RVs(shared_length,
+                                                                        exp_indel_rate * label_mult,
+                                                                        exp_indel_size * label_mult)
 
             # evolve shared region
             shared = sim_evo(shared, prob_sub*label_mult, indel_count, ins_count, indel_sizes)
@@ -524,4 +527,68 @@ def gen_adversarial_chunks_dependent(chunks,
         for _ in range(1):
             yield [a,b], expand_dims(constant(labels), axis=-1) # add dim to fix shape when training
         seqs = [[],[]]
+        labels = []
+
+# bloom filter: generate chunks within some evolutionary distance of canonical chunks
+def gen_chunks_bloom(chunks, tokens=None,
+                        chunk_size=1024,
+                        prob_sub=0.01, exp_indel_rate=0.005, exp_indel_size=10, 
+                        batch_size=32, k=4,
+                        mult=2.0):
+    seqs = []
+    labels = []
+
+    # maintain list of current chunks
+    chunk_count = len(chunks)
+    chunk_idxs = list(range(chunk_count))
+
+    seqlen = chunk_size + k - 1
+
+    while True:
+        # pick chunks to use
+        batch_idxs = []
+        to_sample = batch_size
+        # handle case where we have fewer chunks remaining than batch size
+        if len(chunk_idxs) < batch_size:
+            batch_idxs = chunk_idxs
+            chunk_idxs = list(range(chunk_count))
+            to_sample = batch_size - len(batch_idxs)
+        # otherwise, sample then remove via set operation
+        _batch_idxs = list(np.random.choice(chunk_idxs, to_sample, replace=False))
+        chunk_idxs = list(set(chunk_idxs).difference(set(_batch_idxs)))
+        batch_idxs += _batch_idxs
+
+        for idx in range(batch_size):
+            # get current chunk
+            chunk_idx = batch_idxs[idx]
+            chunk = chunks[chunk_idx]
+
+            # alternate between true and false samples
+            label = idx % 2
+            labels.append(label)
+
+            label_mult = 1.0
+            # multiply evolutionary distance by mult for negative samples
+            label_mult = float(mult + label - label*mult)
+
+            # sample RVs
+            indel_count, ins_count, indel_sizes = sample_indel_RVs(seqlen, 
+                                                                    exp_indel_rate * label_mult,
+                                                                    exp_indel_size * label_mult)
+
+            # simulate evolution
+            #if label == 1:
+            seq = sim_evo(chunk, prob_sub*label_mult, indel_count, ins_count, indel_sizes)
+            #else:
+            #    seq = gen_seq(seqlen)
+
+            # trim or pad to meet chunk_size
+            seq = enforce_length(seq, seqlen)
+
+            # convert to kmers
+            seqs.append(seq2kmers(seq, k))
+        
+        # finalize batch
+        yield pad_to_max(seqs, tokens, chunk_size), constant(labels)
+        seqs = []
         labels = []
