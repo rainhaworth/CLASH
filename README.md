@@ -1,5 +1,5 @@
 # CLASH
-This repository contains the source code for the CLASH model, training scripts, and experiments submitted to RECOMB 2025.
+This repository contains the source code for the CLASH model, training scripts, and experiments.
 
 ## Example usage
 We implement a data-independent hashing approach in `train-hash.py`, effectively creating a learned LSH function, and a data-dependent hashing approach in `train-hash-dependent.py`. Each can be used for all-vs-all and source-target search tasks. These examples use `db.fa` as the source dataset for both tasks and `ref.fa` as the target dataset for source-target tasks.
