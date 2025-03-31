@@ -36,7 +36,7 @@ mfile = args.mfile
 n_hash = 1
 
 # set overlap so step = int(chunksz*(1-overlap)) = 1
-# -1e-9 at the end to be sure we won't go below 1 due to rounding error
+# -1e-9 at the end to be sure we won't go below 1 due to rounding error; works up to chunk size = 1 billion
 overlap = 1.0 - 1.0/chunksz - 1e-9
 
 # construct hashindex, extract chunks from file
@@ -53,7 +53,7 @@ else:
 
 # generator helper function
 def make_gen(prob_sub=0.01, exp_indel_rate=0.005, exp_indel_size=10):
-    return gs.gen_chunks_bloom(chunks, itokens,
+    return gs.gen_chunks_bloom_fast(chunks, itokens,
                                 chunk_size=chunksz, batch_size=batch_size,
                                 prob_sub=prob_sub, exp_indel_rate=exp_indel_rate, exp_indel_size=exp_indel_size,
                                 k=k, mult=args.mult)
@@ -61,10 +61,11 @@ def make_gen(prob_sub=0.01, exp_indel_rate=0.005, exp_indel_size=10):
 itokens, _ = dd.LoadKmerDict('./utils/' + str(k) + 'mers.txt', k=k)
 gen_train = make_gen()
 
-# compute total # batches to iterate over dataset then aim to complete iteration over dataset in 5 epochs
+# compute total # batches to iterate over dataset then aim to complete iteration over dataset in 10 epochs
 # if you don't want this behavior just use steps_per_epoch=100
 batches_per_dataset = len(chunks) // batch_size
-steps_per_epoch = batches_per_dataset // 5
+steps_per_epoch = batches_per_dataset // 10
+#steps_per_epoch = 100
 
 print('chunk count:', len(chunks))
 
@@ -101,7 +102,7 @@ if args.interactive:
 
 # train unless eval_only flag set
 if not args.eval_only:
-    ssb.model.fit(gen_train, steps_per_epoch=steps_per_epoch, epochs=5, verbose=verbose,
+    ssb.model.fit(gen_train, steps_per_epoch=steps_per_epoch, epochs=10, verbose=verbose,
                   #validation_data=([Xvalid, Yvalid], None), \
                   callbacks=[lr_scheduler,
                              #model_saver,

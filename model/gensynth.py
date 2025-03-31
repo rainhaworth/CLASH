@@ -329,7 +329,7 @@ def sample_indel_RVs(shared_length, exp_indel_rate, exp_indel_size):
 # helper function: enforce len(seq) == length via trimming or padding with random DNA
 def enforce_length(seq, length, min_pop=1.0):
     if len(seq) > length:
-        # if too short, trim
+        # if too long, trim
         trim_start = np.random.randint(0, len(seq) - length)
         seq = seq[trim_start : trim_start+length]
     else:
@@ -592,3 +592,64 @@ def gen_chunks_bloom(chunks, tokens=None,
         yield pad_to_max(seqs, tokens, chunk_size), constant(labels)
         seqs = []
         labels = []
+
+# faster variant using fortran sim_evo
+# NOTE: must use sim_evo.seq2kmerids as tokenizer during inference
+import model.sim_evo as se
+def gen_chunks_bloom_fast(chunks, tokens=None,
+                        chunk_size=1024,
+                        prob_sub=0.01, exp_indel_rate=0.005, exp_indel_size=10, 
+                        batch_size=32, k=4,
+                        mult=2.0):
+    seqs = np.zeros((batch_size, chunk_size))
+    labels = np.zeros(batch_size)
+
+    # maintain list of current chunks
+    chunk_count = len(chunks)
+    chunk_idxs = list(range(chunk_count))
+
+    seqlen = chunk_size + k - 1
+
+    while True:
+        # pick chunks to use
+        batch_idxs = []
+        to_sample = batch_size
+        # handle case where we have fewer chunks remaining than batch size
+        if len(chunk_idxs) < batch_size:
+            batch_idxs = chunk_idxs
+            chunk_idxs = list(range(chunk_count))
+            to_sample = batch_size - len(batch_idxs)
+        # otherwise, sample then remove via set operation
+        _batch_idxs = list(np.random.choice(chunk_idxs, to_sample, replace=False))
+        chunk_idxs = list(set(chunk_idxs).difference(set(_batch_idxs)))
+        batch_idxs += _batch_idxs
+
+        for idx in range(batch_size):
+            # get current chunk
+            chunk_idx = batch_idxs[idx]
+            chunk = chunks[chunk_idx]
+
+            # alternate between true and false samples
+            label = idx % 2
+            labels[idx] = label
+
+            label_mult = 1.0
+            # multiply evolutionary distance by mult for negative samples
+            label_mult = float(mult + label - label*mult)
+
+            # sample RVs
+            indel_count, ins_count, indel_sizes = sample_indel_RVs(seqlen, 
+                                                                    exp_indel_rate * label_mult,
+                                                                    exp_indel_size * label_mult)
+
+            # simulate evolution
+            #print(idx, chunk[:10])
+            seq = se.sim_evo(chunk, seqlen, prob_sub*label_mult,
+                                    indel_count, ins_count, indel_sizes)
+
+            #print(seq[:10])
+            # convert to kmers
+            seqs[idx,:] = se.seq2kmerids(seq, seqlen, k)
+        
+        # finalize batch
+        yield seqs, labels
